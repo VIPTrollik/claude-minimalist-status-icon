@@ -138,16 +138,22 @@ function Start-CsiTrayApp {
 '@
     }
     [void][Csi.Native]::SetProcessDPIAware()   # crisp icon on scaled displays
+    # Never show the WinForms crash dialog: log the error and keep running.
+    [Windows.Forms.Application]::SetUnhandledExceptionMode([Windows.Forms.UnhandledExceptionMode]::CatchException)
+    [Windows.Forms.Application]::add_ThreadException({
+        param($sender, $e)
+        try { Add-Content -LiteralPath (Join-Path $CsiApp.Dir 'error.log') -Value "$(Get-Date -Format s)  $($e.Exception.Message)" } catch {}
+    })
 
-    $C = @{
+    $Colors = @{
         Ok   = [Drawing.Color]::FromArgb(59, 168, 234)
         Warn = [Drawing.Color]::FromArgb(245, 180, 0)
         Crit = [Drawing.Color]::FromArgb(229, 72, 77)
         Off  = [Drawing.Color]::FromArgb(140, 140, 140)
     }
-    $S = @{ Next = [DateTime]::MinValue; Handle = [IntPtr]::Zero; Rows = @() }
+    $State = @{ Next = [DateTime]::MinValue; Handle = [IntPtr]::Zero; Rows = @() }
 
-    $levelColor = { param($p) if ($p -ge 90) { $C.Crit } elseif ($p -ge 70) { $C.Warn } else { $C.Ok } }
+    $levelColor = { param($p) if ($p -ge 90) { $Colors.Crit } elseif ($p -ge 70) { $Colors.Warn } else { $Colors.Ok } }
 
     $setIcon = {
         param([double]$pct, $ring, $dot)
@@ -171,22 +177,22 @@ function Start-CsiTrayApp {
         $brush.Dispose(); $track.Dispose(); $g.Dispose()
         $h = $bmp.GetHicon(); $bmp.Dispose()
         $ni.Icon = [Drawing.Icon]::FromHandle($h)
-        if ($S.Handle -ne [IntPtr]::Zero) { [void][Csi.Native]::DestroyIcon($S.Handle) }
-        $S.Handle = $h
+        if ($State.Handle -ne [IntPtr]::Zero) { [void][Csi.Native]::DestroyIcon($State.Handle) }
+        $State.Handle = $h
     }
 
     # Tooltip updates live; the info lines of the menu are rebuilt only when it opens.
     $setText = {
         param([string]$tip, [string[]]$lines)
         $ni.Text = if ($tip.Length -gt 63) { $tip.Substring(0, 63) } else { $tip }
-        $S.Lines = $lines
+        $State.Lines = $lines
     }
 
     $buildMenu = {
         $menu.Items.Clear()
-        foreach ($l in $S.Lines) { $it = $menu.Items.Add($l); $it.Enabled = $false }
+        foreach ($l in $State.Lines) { $it = $menu.Items.Add($l); $it.Enabled = $false }
         [void]$menu.Items.Add('-')
-        [void]$menu.Items.Add('Refresh', $null, { $S.Next = [DateTime]::MinValue })
+        [void]$menu.Items.Add('Refresh', $null, { $State.Next = [DateTime]::MinValue })
         [void]$menu.Items.Add('Open usage page', $null, { Start-Process 'https://claude.ai/settings/usage' })
         [void]$menu.Items.Add('-')
         [void]$menu.Items.Add('Uninstall', $null, {
@@ -213,19 +219,19 @@ function Start-CsiTrayApp {
             if ($weekly)  { $tip += "$($weekly.Label) $([int]$wp)% - $(Format-CsiReset $weekly.Reset)" }
             $lines = $rows | ForEach-Object { "$($_.Label)  $([int]$_.Pct)%    resets $(Format-CsiReset $_.Reset)" }
             & $setText ($tip -join "`n") $lines
-            $S.Next = (Get-Date).AddMinutes(3)
+            $State.Next = (Get-Date).AddMinutes(3)
         } catch {
             $msg = $_.Exception.Message
             $resp = $_.Exception.Response
-            $S.Next = (Get-Date).AddMinutes(1)
+            $State.Next = (Get-Date).AddMinutes(1)
             if ($resp -and [int]$resp.StatusCode -eq 429) {
                 $msg = 'Rate limited, retrying later'
                 $ra = 0; [void][int]::TryParse($resp.Headers['Retry-After'], [ref]$ra)
-                $S.Next = (Get-Date).AddSeconds([Math]::Max(120, $ra))
+                $State.Next = (Get-Date).AddSeconds([Math]::Max(120, $ra))
             } elseif ($resp -and [int]$resp.StatusCode -eq 401) {
                 $msg = 'Token expired - open Claude Code'
             }
-            & $setIcon 0 $C.Off $C.Off
+            & $setIcon 0 $Colors.Off $Colors.Off
             & $setText "Claude usage: $msg" @("Error: $msg")
         }
     }
@@ -234,7 +240,7 @@ function Start-CsiTrayApp {
     # wall-clock check notices the gap and refreshes immediately.
     $tick = {
         if ($quit.WaitOne(0)) { & $exitApp; return }
-        if ((Get-Date) -ge $S.Next) { & $update }
+        if ((Get-Date) -ge $State.Next) { & $update }
     }
 
     $exitApp = {
@@ -246,9 +252,9 @@ function Start-CsiTrayApp {
     $menu  = New-Object Windows.Forms.ContextMenuStrip
     $ni    = New-Object Windows.Forms.NotifyIcon
     $ni.ContextMenuStrip = $menu
-    $menu.add_Opening({ param($s, $e) & $buildMenu; $e.Cancel = $false })
-    $ni.add_MouseClick({ param($s, $e) if ($e.Button -eq 'Left') { $S.Next = [DateTime]::MinValue; & $tick } })
-    & $setIcon 0 $C.Off $C.Off
+    $menu.add_Opening({ param($sender, $e) & $buildMenu; $e.Cancel = $false })
+    $ni.add_MouseClick({ param($sender, $e) if ($e.Button -eq 'Left') { $State.Next = [DateTime]::MinValue; & $tick } })
+    & $setIcon 0 $Colors.Off $Colors.Off
     & $setText 'Claude usage: loading...' @('Loading...')
     & $buildMenu
     $ni.Visible = $true
@@ -262,7 +268,7 @@ function Start-CsiTrayApp {
     try { [Windows.Forms.Application]::Run() }
     finally {
         $ni.Visible = $false; $ni.Dispose()
-        if ($S.Handle -ne [IntPtr]::Zero) { [void][Csi.Native]::DestroyIcon($S.Handle) }
+        if ($State.Handle -ne [IntPtr]::Zero) { [void][Csi.Native]::DestroyIcon($State.Handle) }
         $quit.Dispose(); $mutex.ReleaseMutex(); $mutex.Dispose()
     }
 }
