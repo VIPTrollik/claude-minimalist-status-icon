@@ -3,7 +3,8 @@
 A tiny Windows tray ring showing your Claude plan usage. One PowerShell file, nothing to install.
 
 - **Ring** = current session (5-hour) usage; weekly is in the tooltip
-- Blue < 70% · amber < 90% · red ≥ 90% · grey = no data (hover for why)
+- Blue < 70% · amber < 90% · red ≥ 90% · empty = no data (hover for why)
+- Background ring adapts to the Windows light/dark theme
 - Hover for percentages and reset times; right-click for details, refresh, exit, uninstall
 
 ## Install
@@ -17,6 +18,14 @@ irm https://raw.githubusercontent.com/VIPTrollik/claude-minimalist-status-icon/m
 It copies itself to `%LOCALAPPDATA%\ClaudeStatusIcon`, adds a Startup shortcut and starts. Run the same command again to update.
 
 **Uninstall:** right-click the icon → Uninstall.
+
+## Colours
+
+```powershell
+& "$env:LOCALAPPDATA\ClaudeStatusIcon\claude-tray.ps1" -Color '#D97757' -Track '#FFFFFF99'
+```
+
+`-Color` sets the ring (replaces blue/amber/red), `-Track` the background ring. Use `#RRGGBB`, `#RRGGBBAA` (alpha last) or a name like `white`. Set one or both; `-Reset` restores defaults. The icon restarts with the new colours, and updates keep them.
 
 ## Requirements
 

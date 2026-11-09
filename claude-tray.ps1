@@ -3,17 +3,56 @@
 #
 #   Install / update :  irm https://raw.githubusercontent.com/VIPTrollik/claude-minimalist-status-icon/main/claude-tray.ps1 | iex
 #   Uninstall        :  tray icon > right-click > Uninstall
+#   Colours          :  & "$env:LOCALAPPDATA\ClaudeStatusIcon\claude-tray.ps1" -Color '#D97757' -Track '#FFFFFF99'
+#                       (-Reset for defaults; colours are #RRGGBB, #RRGGBBAA or names like white)
 #
 # Run from anywhere except the install folder -> installs itself (copy, startup shortcut, launch).
 # Run from the install folder (what the startup shortcut does) -> shows the tray icon.
-param([switch]$Uninstall, [switch]$Run)
+param([switch]$Uninstall, [switch]$Run, [string]$Color, [string]$Track, [switch]$Reset)
 
 $CsiApp = @{
     Name     = 'ClaudeStatusIcon'
     Source   = 'https://raw.githubusercontent.com/VIPTrollik/claude-minimalist-status-icon/main/claude-tray.ps1'
     Dir      = Join-Path $env:LOCALAPPDATA 'ClaudeStatusIcon'
     Script   = Join-Path $env:LOCALAPPDATA 'ClaudeStatusIcon\claude-tray.ps1'
+    Config   = Join-Path $env:LOCALAPPDATA 'ClaudeStatusIcon\config.json'
     Shortcut = Join-Path ([Environment]::GetFolderPath('Startup')) 'ClaudeStatusIcon.lnk'
+}
+
+# ---------------------------------------------------------------- colours / config
+
+function ConvertTo-CsiColor([string]$value) {
+    Add-Type -AssemblyName System.Drawing
+    $v = $value.Trim()
+    if ($v -match '^#?([0-9a-fA-F]{6})([0-9a-fA-F]{2})?$') {
+        $rgb = [Convert]::ToInt32($Matches[1], 16)
+        $a = if ($Matches[2]) { [Convert]::ToInt32($Matches[2], 16) } else { 255 }
+        return [Drawing.Color]::FromArgb($a, ($rgb -shr 16) -band 255, ($rgb -shr 8) -band 255, $rgb -band 255)
+    }
+    $named = [Drawing.Color]::FromName($v)
+    if ($named.IsKnownColor) { return $named }
+    throw "Unknown colour '$value' - use #RRGGBB, #RRGGBBAA (alpha last) or a name like white"
+}
+
+function Get-CsiConfig {
+    $cfg = @{}
+    if (Test-Path $CsiApp.Config) {
+        (Get-Content $CsiApp.Config -Raw | ConvertFrom-Json).PSObject.Properties | ForEach-Object { $cfg[$_.Name] = $_.Value }
+    }
+    return $cfg
+}
+
+function Set-CsiConfig {
+    if (-not (Test-Path $CsiApp.Script)) { Write-Host 'Install the icon first.'; return }
+    $cfg = if ($Reset) { @{} } else { Get-CsiConfig }
+    if ($Color) { [void](ConvertTo-CsiColor $Color); $cfg.Color = $Color }
+    if ($Track) { [void](ConvertTo-CsiColor $Track); $cfg.Track = $Track }
+    if ($cfg.Count) { $cfg | ConvertTo-Json | Set-Content -LiteralPath $CsiApp.Config -Encoding UTF8 }
+    else { Remove-Item -LiteralPath $CsiApp.Config -ErrorAction SilentlyContinue }
+    Stop-CsiTray
+    [void](Start-CsiTray)
+    $show = { param($k, $d) if ($cfg[$k]) { $cfg[$k] } else { $d } }
+    Write-Host "Ring: $(& $show 'Color' 'default (blue, amber >= 70%, red >= 90%)')   Track: $(& $show 'Track' 'default (follows Windows theme)')"
 }
 
 # ---------------------------------------------------------------- install / uninstall
@@ -153,7 +192,24 @@ function Start-CsiTrayApp {
     }
     $State = @{ Next = [DateTime]::MinValue; Handle = [IntPtr]::Zero; Rows = @() }
 
-    $levelColor = { param($p) if ($p -ge 90) { $Colors.Crit } elseif ($p -ge 70) { $Colors.Warn } else { $Colors.Ok } }
+    # Custom colours: -Color replaces all ring colours, -Track the background ring.
+    $cfg = @{}
+    try { $cfg = Get-CsiConfig } catch {}
+    $customRing  = $null; if ($cfg.Color) { try { $customRing  = ConvertTo-CsiColor $cfg.Color } catch {} }
+    $customTrack = $null; if ($cfg.Track) { try { $customTrack = ConvertTo-CsiColor $cfg.Track } catch {} }
+
+    # Default track follows the taskbar theme so it is visible on both dark and light.
+    $trackColor = {
+        if ($customTrack) { return $customTrack }
+        $light = (Get-ItemProperty 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Themes\Personalize' -ErrorAction SilentlyContinue).SystemUsesLightTheme -eq 1
+        if ($light) { [Drawing.Color]::FromArgb(90, 0, 0, 0) } else { [Drawing.Color]::FromArgb(150, 255, 255, 255) }
+    }
+
+    $levelColor = {
+        param($p)
+        if ($customRing) { $customRing }
+        elseif ($p -ge 90) { $Colors.Crit } elseif ($p -ge 70) { $Colors.Warn } else { $Colors.Ok }
+    }
 
     $setIcon = {
         param([double]$pct, $ring)
@@ -164,7 +220,7 @@ function Start-CsiTrayApp {
         $w = [Math]::Max(2.0, $s * 0.17)
         $pad = $w / 2 + 0.5
         $rect = New-Object Drawing.RectangleF $pad, $pad, ($s - 2 * $pad), ($s - 2 * $pad)
-        $track = New-Object Drawing.Pen ([Drawing.Color]::FromArgb(80, $ring)), $w
+        $track = New-Object Drawing.Pen (& $trackColor), $w
         $g.DrawEllipse($track, $rect)
         if ($pct -gt 0) {
             $pen = New-Object Drawing.Pen $ring, $w
@@ -273,5 +329,6 @@ function Start-CsiTrayApp {
 # ---------------------------------------------------------------- entry point
 
 if ($Uninstall) { Uninstall-CsiTray }
+elseif ($Color -or $Track -or $Reset) { Set-CsiConfig }
 elseif ($Run -or ($PSCommandPath -and $PSCommandPath -eq $CsiApp.Script)) { Start-CsiTrayApp }
 else { Install-CsiTray }
