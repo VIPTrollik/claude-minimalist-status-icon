@@ -2,8 +2,7 @@
 
 A tiny Windows tray ring showing your Claude plan usage. One PowerShell file, nothing to install.
 
-- **Ring** = current session (5-hour) usage
-- **Center dot** = weekly usage level
+- **Ring** = current session (5-hour) usage; weekly is in the tooltip
 - Blue < 70% · amber < 90% · red ≥ 90% · grey = no data (hover for why)
 - Hover for percentages and reset times; right-click for details, refresh, exit, uninstall
 

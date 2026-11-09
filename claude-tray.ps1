@@ -156,7 +156,7 @@ function Start-CsiTrayApp {
     $levelColor = { param($p) if ($p -ge 90) { $Colors.Crit } elseif ($p -ge 70) { $Colors.Warn } else { $Colors.Ok } }
 
     $setIcon = {
-        param([double]$pct, $ring, $dot)
+        param([double]$pct, $ring)
         $s = [Windows.Forms.SystemInformation]::SmallIconSize.Width
         $bmp = New-Object Drawing.Bitmap $s, $s
         $g = [Drawing.Graphics]::FromImage($bmp)
@@ -171,10 +171,7 @@ function Start-CsiTrayApp {
             $g.DrawArc($pen, $rect, -90, [float]([Math]::Max(4, 3.6 * [Math]::Min(100, $pct))))
             $pen.Dispose()
         }
-        $d = $s * 0.28
-        $brush = New-Object Drawing.SolidBrush $dot
-        $g.FillEllipse($brush, ($s - $d) / 2, ($s - $d) / 2, $d, $d)
-        $brush.Dispose(); $track.Dispose(); $g.Dispose()
+        $track.Dispose(); $g.Dispose()
         $h = $bmp.GetHicon(); $bmp.Dispose()
         $ni.Icon = [Drawing.Icon]::FromHandle($h)
         if ($State.Handle -ne [IntPtr]::Zero) { [void][Csi.Native]::DestroyIcon($State.Handle) }
@@ -213,7 +210,7 @@ function Start-CsiTrayApp {
             $weekly  = $rows | Where-Object Kind -like 'weekly*' | Sort-Object Pct -Descending | Select-Object -First 1
             $sp = if ($session) { $session.Pct } else { 0 }
             $wp = if ($weekly) { $weekly.Pct } else { 0 }
-            & $setIcon $sp (& $levelColor $sp) (& $levelColor $wp)
+            & $setIcon $sp (& $levelColor $sp)
             $tip = @()
             if ($session) { $tip += "Session $([int]$sp)% - $(Format-CsiReset $session.Reset)" }
             if ($weekly)  { $tip += "$($weekly.Label) $([int]$wp)% - $(Format-CsiReset $weekly.Reset)" }
@@ -231,7 +228,7 @@ function Start-CsiTrayApp {
             } elseif ($resp -and [int]$resp.StatusCode -eq 401) {
                 $msg = 'Token expired - open Claude Code'
             }
-            & $setIcon 0 $Colors.Off $Colors.Off
+            & $setIcon 0 $Colors.Off
             & $setText "Claude usage: $msg" @("Error: $msg")
         }
     }
@@ -254,7 +251,7 @@ function Start-CsiTrayApp {
     $ni.ContextMenuStrip = $menu
     $menu.add_Opening({ param($sender, $e) & $buildMenu; $e.Cancel = $false })
     $ni.add_MouseClick({ param($sender, $e) if ($e.Button -eq 'Left') { $State.Next = [DateTime]::MinValue; & $tick } })
-    & $setIcon 0 $Colors.Off $Colors.Off
+    & $setIcon 0 $Colors.Off
     & $setText 'Claude usage: loading...' @('Loading...')
     & $buildMenu
     $ni.Visible = $true
