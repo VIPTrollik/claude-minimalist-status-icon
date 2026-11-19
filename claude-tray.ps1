@@ -3,10 +3,10 @@
 #
 #   Install / update :  irm https://raw.githubusercontent.com/VIPTrollik/claude-minimalist-status-icon/main/claude-tray.ps1 | iex
 #   Uninstall        :  tray icon > right-click > Uninstall
-#   Settings         :  & "$env:LOCALAPPDATA\ClaudeStatusIcon\claude-tray.ps1" -Layout pie -Warn on -HideWeeklyBelow 50
-#                       -Layout ring|pie   ring = session only, pie = session ring + weekly pie in the middle
+#   Settings         :  & "$env:LOCALAPPDATA\ClaudeStatusIcon\claude-tray.ps1" -Layout water -Warn on -HideWeeklyBelow 50
+#                       -Layout ring|water ring = session only, water = session ring + weekly water level inside
 #                       -Warn on|off       each limit turns amber at 70% and red at 90%
-#                       -HideWeeklyBelow N hide the weekly pie while weekly usage is under N% (0 = always show)
+#                       -HideWeeklyBelow N hide the weekly level while weekly usage is under N% (0 = always show)
 #                       -Color / -WeeklyColor / -Track   colours (#RRGGBB, #RRGGBBAA or names like white)
 #                       -Reset             back to defaults
 #
@@ -54,7 +54,8 @@ function Get-CsiConfig {
 
 function Set-CsiConfig {
     if (-not (Test-Path $CsiApp.Script)) { Write-Host 'Install the icon first.'; return }
-    if ($Layout -and $Layout -notin 'ring', 'pie') { Write-Host "-Layout must be 'ring' or 'pie'"; return }
+    if ($Layout -eq 'pie') { $Layout = 'water' }   # old name
+    if ($Layout -and $Layout -notin 'ring', 'water') { Write-Host "-Layout must be 'ring' or 'water'"; return }
     if ($Warn -and $Warn -notin 'on', 'off') { Write-Host "-Warn must be 'on' or 'off'"; return }
     if ($HideWeeklyBelow -gt 100) { Write-Host '-HideWeeklyBelow must be 0-100'; return }
     $cfg = if ($Reset) { @{} } else { Get-CsiConfig }
@@ -75,11 +76,11 @@ function Set-CsiConfig {
 
 # Saved settings merged over the defaults.
 function Get-CsiSettings {
-    $s = @{ Layout = 'pie'; Warn = 'on'; HideWeeklyBelow = 50; Color = '#3BA8EA'; WeeklyColor = '#A78BFA'; Track = $null }
+    $s = @{ Layout = 'water'; Warn = 'on'; HideWeeklyBelow = 50; Color = '#3BA8EA'; WeeklyColor = '#A78BFA'; Track = $null }
     $cfg = @{}
     try { $cfg = Get-CsiConfig } catch {}
     foreach ($k in @($cfg.Keys)) { if ($null -ne $cfg[$k] -and "$($cfg[$k])" -ne '') { $s[$k] = $cfg[$k] } }
-    if ($s.Layout -notin 'ring', 'pie') { $s.Layout = 'pie' }
+    if ($s.Layout -notin 'ring', 'water') { $s.Layout = 'water' }   # also maps the old 'pie'
     if ($s.Warn -notin 'on', 'off') { $s.Warn = 'on' }
     $s.HideWeeklyBelow = [int]$s.HideWeeklyBelow
     return $s
@@ -310,15 +311,17 @@ function Start-CsiTrayApp {
         else { $base }
     }
 
-    # Ring = session. Optional pie in the middle = weekly ($pieColor $null -> no pie).
+    # Ring = session. Optional water level inside = weekly ($fillColor $null -> ring only).
+    # With the water level shown the ring gets thinner so the level has room to be readable.
     $setIcon = {
-        param([double]$pct, $ring, [double]$piePct = 0, $pieColor = $null)
+        param([double]$pct, $ring, [double]$levelPct = 0, $fillColor = $null)
         $s = [Windows.Forms.SystemInformation]::SmallIconSize.Width
         $bmp = New-Object Drawing.Bitmap $s, $s
         $g = [Drawing.Graphics]::FromImage($bmp)
         $g.SmoothingMode = [Drawing.Drawing2D.SmoothingMode]::AntiAlias
-        $w = [Math]::Max(2.0, $s * 0.17)
-        $pad = $w / 2 + 0.5
+        $water = $null -ne $fillColor
+        if ($water) { $w = [Math]::Max(2.0, $s * 0.1375); $pad = $w / 2 + 0.3 }
+        else        { $w = [Math]::Max(2.0, $s * 0.17);   $pad = $w / 2 + 0.5 }
         $rect = New-Object Drawing.RectangleF $pad, $pad, ($s - 2 * $pad), ($s - 2 * $pad)
         $trackC = & $trackColor
         $track = New-Object Drawing.Pen $trackC, $w
@@ -328,17 +331,19 @@ function Start-CsiTrayApp {
             $g.DrawArc($pen, $rect, -90, [float]([Math]::Max(4, 3.6 * [Math]::Min(100, $pct))))
             $pen.Dispose()
         }
-        if ($pieColor) {
-            $gap = [Math]::Max(1.0, $s * 0.07)
-            $rp = $s / 2 - $w - 0.5 - $gap
-            $pr = New-Object Drawing.RectangleF ($s / 2 - $rp), ($s / 2 - $rp), (2 * $rp), (2 * $rp)
+        if ($water) {
+            $rp = $s / 2 - $pad - $w / 2 - [Math]::Max(0.8, $s * 0.05)
+            $x0 = [float]($s / 2 - $rp); $d = [float](2 * $rp)
             $tb = New-Object Drawing.SolidBrush $trackC
-            $g.FillEllipse($tb, $pr); $tb.Dispose()
-            if ($piePct -gt 0) {
-                $pb = New-Object Drawing.SolidBrush $pieColor
-                if ($piePct -ge 100) { $g.FillEllipse($pb, $pr) }
-                else { $g.FillPie($pb, $pr.X, $pr.Y, $pr.Width, $pr.Height, -90, [float]([Math]::Max(8, 3.6 * $piePct))) }
-                $pb.Dispose()
+            $g.FillEllipse($tb, $x0, $x0, $d, $d); $tb.Dispose()
+            if ($levelPct -gt 0) {
+                $clip = New-Object Drawing.Drawing2D.GraphicsPath
+                $clip.AddEllipse($x0, $x0, $d, $d)
+                $g.SetClip($clip)
+                $lh = [float]($d * [Math]::Min(100, $levelPct) / 100)
+                $lb = New-Object Drawing.SolidBrush $fillColor
+                $g.FillRectangle($lb, [float]0, [float]($x0 + $d - $lh), [float]$s, $lh)
+                $lb.Dispose(); $g.ResetClip(); $clip.Dispose()
             }
         }
         $track.Dispose(); $g.Dispose()
@@ -380,9 +385,9 @@ function Start-CsiTrayApp {
             $weekly  = $rows | Where-Object Kind -like 'weekly*' | Sort-Object Pct -Descending | Select-Object -First 1
             $sp = if ($session) { $session.Pct } else { 0 }
             $wp = if ($weekly) { $weekly.Pct } else { 0 }
-            $pieColor = $null
-            if ($Opt.Layout -eq 'pie' -and $weekly -and $wp -ge $Opt.HideWeeklyBelow) { $pieColor = & $levelColor $wp $Colors.Weekly }
-            & $setIcon $sp (& $levelColor $sp $Colors.Session) $wp $pieColor
+            $weeklyColor = $null
+            if ($Opt.Layout -eq 'water' -and $weekly -and $wp -ge $Opt.HideWeeklyBelow) { $weeklyColor = & $levelColor $wp $Colors.Weekly }
+            & $setIcon $sp (& $levelColor $sp $Colors.Session) $wp $weeklyColor
             $tip = @()
             if ($session) { $tip += "Session $([int]$sp)% - $(Format-CsiReset $session.Reset)" }
             if ($weekly)  { $tip += "$($weekly.Label) $([int]$wp)% - $(Format-CsiReset $weekly.Reset)" }

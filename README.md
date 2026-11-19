@@ -3,7 +3,7 @@
 A tiny Windows tray ring showing your Claude plan usage. One PowerShell file, nothing to install.
 
 - **Ring** = current session (5-hour) usage
-- **Center pie** = weekly usage, shown once it passes 50%
+- **Water level** inside the ring = weekly usage, shown once it passes 50% (the ring gets thinner to make room)
 - Each limit turns amber at 70% and red at 90% on its own; empty ring = no data (hover for why)
 - Background ring adapts to the Windows light/dark theme
 - Hover for percentages and reset times; right-click for details, refresh, exit, uninstall
@@ -23,16 +23,16 @@ It copies itself to `%LOCALAPPDATA%\ClaudeStatusIcon`, adds a Startup shortcut a
 ## Settings
 
 ```powershell
-& "$env:LOCALAPPDATA\ClaudeStatusIcon\claude-tray.ps1" -Layout pie -Warn on -HideWeeklyBelow 50
+& "$env:LOCALAPPDATA\ClaudeStatusIcon\claude-tray.ps1" -Layout water -Warn on -HideWeeklyBelow 50
 ```
 
 | Option | Values | Default |
 |---|---|---|
-| `-Layout` | `pie` (session ring + weekly pie) or `ring` (session only) | `pie` |
+| `-Layout` | `water` (session ring + weekly water level) or `ring` (session only) | `water` |
 | `-Warn` | `on` / `off`: amber at 70%, red at 90%, per limit | `on` |
-| `-HideWeeklyBelow` | `0`–`100`: hide the pie while weekly is below this (`0` = always show) | `50` |
+| `-HideWeeklyBelow` | `0`–`100`: hide the water level while weekly is below this (`0` = always show) | `50` |
 | `-Color` | session ring colour | `#3BA8EA` |
-| `-WeeklyColor` | weekly pie colour | `#A78BFA` |
+| `-WeeklyColor` | weekly water level colour | `#A78BFA` |
 | `-Track` | background ring colour | follows Windows theme |
 
 Colours are `#RRGGBB`, `#RRGGBBAA` (alpha last) or a name like `white`. Pass any subset; `-Reset` restores defaults. The icon restarts with the new settings, and updates keep them.
