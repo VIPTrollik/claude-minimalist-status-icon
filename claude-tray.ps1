@@ -12,11 +12,11 @@
 #
 # Run from anywhere except the install folder -> installs itself (copy, startup shortcut, launch).
 # Run from the install folder (what the startup shortcut does) -> shows the tray icon.
+# No Validate* attributes here: under `irm | iex` they are checked against the empty defaults
+# and abort the install. Values are validated in Set-CsiConfig instead.
 param(
     [switch]$Uninstall, [switch]$Run, [switch]$Reset,
-    [ValidateSet('ring', 'pie')][string]$Layout,
-    [ValidateSet('on', 'off')][string]$Warn,
-    [ValidateRange(0, 100)][int]$HideWeeklyBelow = -1,
+    [string]$Layout, [string]$Warn, [int]$HideWeeklyBelow = -1,
     [string]$Color, [string]$WeeklyColor, [string]$Track
 )
 
@@ -54,9 +54,12 @@ function Get-CsiConfig {
 
 function Set-CsiConfig {
     if (-not (Test-Path $CsiApp.Script)) { Write-Host 'Install the icon first.'; return }
+    if ($Layout -and $Layout -notin 'ring', 'pie') { Write-Host "-Layout must be 'ring' or 'pie'"; return }
+    if ($Warn -and $Warn -notin 'on', 'off') { Write-Host "-Warn must be 'on' or 'off'"; return }
+    if ($HideWeeklyBelow -gt 100) { Write-Host '-HideWeeklyBelow must be 0-100'; return }
     $cfg = if ($Reset) { @{} } else { Get-CsiConfig }
-    if ($Layout) { $cfg.Layout = $Layout }
-    if ($Warn) { $cfg.Warn = $Warn }
+    if ($Layout) { $cfg.Layout = $Layout.ToLower() }
+    if ($Warn) { $cfg.Warn = $Warn.ToLower() }
     if ($HideWeeklyBelow -ge 0) { $cfg.HideWeeklyBelow = $HideWeeklyBelow }
     if ($Color) { [void](ConvertTo-CsiColor $Color); $cfg.Color = $Color }
     if ($WeeklyColor) { [void](ConvertTo-CsiColor $WeeklyColor); $cfg.WeeklyColor = $WeeklyColor }
