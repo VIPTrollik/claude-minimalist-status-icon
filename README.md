@@ -2,8 +2,9 @@
 
 A tiny Windows tray ring showing your Claude plan usage. One PowerShell file, nothing to install.
 
-- **Ring** = current session (5-hour) usage; weekly is in the tooltip
-- Blue < 70% · amber < 90% · red ≥ 90% · empty = no data (hover for why)
+- **Ring** = current session (5-hour) usage
+- **Center pie** = weekly usage, shown once it passes 50%
+- Each limit turns amber at 70% and red at 90% on its own; empty ring = no data (hover for why)
 - Background ring adapts to the Windows light/dark theme
 - Hover for percentages and reset times; right-click for details, refresh, exit, uninstall
 
@@ -19,14 +20,22 @@ It copies itself to `%LOCALAPPDATA%\ClaudeStatusIcon`, adds a Startup shortcut a
 
 **Uninstall:** right-click the icon → Uninstall.
 
-## Colours
+## Settings
 
 ```powershell
-& "$env:LOCALAPPDATA\ClaudeStatusIcon\claude-tray.ps1" -Color '#D97757' -Track '#FFFFFF99'
+& "$env:LOCALAPPDATA\ClaudeStatusIcon\claude-tray.ps1" -Layout pie -Warn on -HideWeeklyBelow 50
 ```
 
-`-Color` sets the ring (replaces blue/amber/red), `-Track` the background ring. Use `#RRGGBB`, `#RRGGBBAA` (alpha last) or a name like `white`. Set one or both; `-Reset` restores defaults. The icon restarts with the new colours, and updates keep them.
+| Option | Values | Default |
+|---|---|---|
+| `-Layout` | `pie` (session ring + weekly pie) or `ring` (session only) | `pie` |
+| `-Warn` | `on` / `off`: amber at 70%, red at 90%, per limit | `on` |
+| `-HideWeeklyBelow` | `0`–`100`: hide the pie while weekly is below this (`0` = always show) | `50` |
+| `-Color` | session ring colour | `#3BA8EA` |
+| `-WeeklyColor` | weekly pie colour | `#A78BFA` |
+| `-Track` | background ring colour | follows Windows theme |
 
+Colours are `#RRGGBB`, `#RRGGBBAA` (alpha last) or a name like `white`. Pass any subset; `-Reset` restores defaults. The icon restarts with the new settings, and updates keep them.
 ## Requirements
 
 Windows 10/11 and the [Claude Code](https://claude.com/claude-code) CLI signed in once with a Pro/Max account (`claude auth login`). The script reads the login from `~/.claude/.credentials.json` and polls the same usage endpoint `/usage` uses (undocumented, may change) every 3 minutes.

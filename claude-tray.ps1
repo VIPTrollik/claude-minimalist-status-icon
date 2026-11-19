@@ -3,12 +3,22 @@
 #
 #   Install / update :  irm https://raw.githubusercontent.com/VIPTrollik/claude-minimalist-status-icon/main/claude-tray.ps1 | iex
 #   Uninstall        :  tray icon > right-click > Uninstall
-#   Colours          :  & "$env:LOCALAPPDATA\ClaudeStatusIcon\claude-tray.ps1" -Color '#D97757' -Track '#FFFFFF99'
-#                       (-Reset for defaults; colours are #RRGGBB, #RRGGBBAA or names like white)
+#   Settings         :  & "$env:LOCALAPPDATA\ClaudeStatusIcon\claude-tray.ps1" -Layout pie -Warn on -HideWeeklyBelow 50
+#                       -Layout ring|pie   ring = session only, pie = session ring + weekly pie in the middle
+#                       -Warn on|off       each limit turns amber at 70% and red at 90%
+#                       -HideWeeklyBelow N hide the weekly pie while weekly usage is under N% (0 = always show)
+#                       -Color / -WeeklyColor / -Track   colours (#RRGGBB, #RRGGBBAA or names like white)
+#                       -Reset             back to defaults
 #
 # Run from anywhere except the install folder -> installs itself (copy, startup shortcut, launch).
 # Run from the install folder (what the startup shortcut does) -> shows the tray icon.
-param([switch]$Uninstall, [switch]$Run, [string]$Color, [string]$Track, [switch]$Reset)
+param(
+    [switch]$Uninstall, [switch]$Run, [switch]$Reset,
+    [ValidateSet('ring', 'pie')][string]$Layout,
+    [ValidateSet('on', 'off')][string]$Warn,
+    [ValidateRange(0, 100)][int]$HideWeeklyBelow = -1,
+    [string]$Color, [string]$WeeklyColor, [string]$Track
+)
 
 $CsiApp = @{
     Name     = 'ClaudeStatusIcon'
@@ -45,14 +55,31 @@ function Get-CsiConfig {
 function Set-CsiConfig {
     if (-not (Test-Path $CsiApp.Script)) { Write-Host 'Install the icon first.'; return }
     $cfg = if ($Reset) { @{} } else { Get-CsiConfig }
+    if ($Layout) { $cfg.Layout = $Layout }
+    if ($Warn) { $cfg.Warn = $Warn }
+    if ($HideWeeklyBelow -ge 0) { $cfg.HideWeeklyBelow = $HideWeeklyBelow }
     if ($Color) { [void](ConvertTo-CsiColor $Color); $cfg.Color = $Color }
+    if ($WeeklyColor) { [void](ConvertTo-CsiColor $WeeklyColor); $cfg.WeeklyColor = $WeeklyColor }
     if ($Track) { [void](ConvertTo-CsiColor $Track); $cfg.Track = $Track }
     if ($cfg.Count) { $cfg | ConvertTo-Json | Set-Content -LiteralPath $CsiApp.Config -Encoding UTF8 }
     else { Remove-Item -LiteralPath $CsiApp.Config -ErrorAction SilentlyContinue }
     Stop-CsiTray
     [void](Start-CsiTray)
-    $show = { param($k, $d) if ($cfg[$k]) { $cfg[$k] } else { $d } }
-    Write-Host "Ring: $(& $show 'Color' 'default (blue, amber >= 70%, red >= 90%)')   Track: $(& $show 'Track' 'default (follows Windows theme)')"
+    $s = Get-CsiSettings
+    Write-Host ("Layout: {0}   Warn: {1}   HideWeeklyBelow: {2}%   Color: {3}   WeeklyColor: {4}   Track: {5}" -f `
+        $s.Layout, $s.Warn, $s.HideWeeklyBelow, $s.Color, $s.WeeklyColor, $(if ($s.Track) { $s.Track } else { 'auto (Windows theme)' }))
+}
+
+# Saved settings merged over the defaults.
+function Get-CsiSettings {
+    $s = @{ Layout = 'pie'; Warn = 'on'; HideWeeklyBelow = 50; Color = '#3BA8EA'; WeeklyColor = '#A78BFA'; Track = $null }
+    $cfg = @{}
+    try { $cfg = Get-CsiConfig } catch {}
+    foreach ($k in @($cfg.Keys)) { if ($null -ne $cfg[$k] -and "$($cfg[$k])" -ne '') { $s[$k] = $cfg[$k] } }
+    if ($s.Layout -notin 'ring', 'pie') { $s.Layout = 'pie' }
+    if ($s.Warn -notin 'on', 'off') { $s.Warn = 'on' }
+    $s.HideWeeklyBelow = [int]$s.HideWeeklyBelow
+    return $s
 }
 
 # ---------------------------------------------------------------- install / uninstall
@@ -258,11 +285,12 @@ function Start-CsiTrayApp {
     }
     $State = @{ Next = [DateTime]::MinValue; Handle = [IntPtr]::Zero; Rows = @() }
 
-    # Custom colours: -Color replaces all ring colours, -Track the background ring.
-    $cfg = @{}
-    try { $cfg = Get-CsiConfig } catch {}
-    $customRing  = $null; if ($cfg.Color) { try { $customRing  = ConvertTo-CsiColor $cfg.Color } catch {} }
-    $customTrack = $null; if ($cfg.Track) { try { $customTrack = ConvertTo-CsiColor $cfg.Track } catch {} }
+    # Settings (see the header). Bad colour values fall back to the defaults.
+    $Opt = Get-CsiSettings
+    $toColor = { param($v, $fallback) try { ConvertTo-CsiColor $v } catch { ConvertTo-CsiColor $fallback } }
+    $Colors.Session = & $toColor $Opt.Color '#3BA8EA'
+    $Colors.Weekly  = & $toColor $Opt.WeeklyColor '#A78BFA'
+    $customTrack = $null; if ($Opt.Track) { try { $customTrack = ConvertTo-CsiColor $Opt.Track } catch {} }
 
     # Default track follows the taskbar theme so it is visible on both dark and light.
     $trackColor = {
@@ -271,14 +299,17 @@ function Start-CsiTrayApp {
         if ($light) { [Drawing.Color]::FromArgb(90, 0, 0, 0) } else { [Drawing.Color]::FromArgb(150, 255, 255, 255) }
     }
 
+    # Each limit gets its own colour: its base colour, or amber/red once that limit runs high.
     $levelColor = {
-        param($p)
-        if ($customRing) { $customRing }
-        elseif ($p -ge 90) { $Colors.Crit } elseif ($p -ge 70) { $Colors.Warn } else { $Colors.Ok }
+        param($p, $base)
+        if ($Opt.Warn -eq 'on' -and $p -ge 90) { $Colors.Crit }
+        elseif ($Opt.Warn -eq 'on' -and $p -ge 70) { $Colors.Warn }
+        else { $base }
     }
 
+    # Ring = session. Optional pie in the middle = weekly ($pieColor $null -> no pie).
     $setIcon = {
-        param([double]$pct, $ring)
+        param([double]$pct, $ring, [double]$piePct = 0, $pieColor = $null)
         $s = [Windows.Forms.SystemInformation]::SmallIconSize.Width
         $bmp = New-Object Drawing.Bitmap $s, $s
         $g = [Drawing.Graphics]::FromImage($bmp)
@@ -286,12 +317,26 @@ function Start-CsiTrayApp {
         $w = [Math]::Max(2.0, $s * 0.17)
         $pad = $w / 2 + 0.5
         $rect = New-Object Drawing.RectangleF $pad, $pad, ($s - 2 * $pad), ($s - 2 * $pad)
-        $track = New-Object Drawing.Pen (& $trackColor), $w
+        $trackC = & $trackColor
+        $track = New-Object Drawing.Pen $trackC, $w
         $g.DrawEllipse($track, $rect)
         if ($pct -gt 0) {
             $pen = New-Object Drawing.Pen $ring, $w
             $g.DrawArc($pen, $rect, -90, [float]([Math]::Max(4, 3.6 * [Math]::Min(100, $pct))))
             $pen.Dispose()
+        }
+        if ($pieColor) {
+            $gap = [Math]::Max(1.0, $s * 0.07)
+            $rp = $s / 2 - $w - 0.5 - $gap
+            $pr = New-Object Drawing.RectangleF ($s / 2 - $rp), ($s / 2 - $rp), (2 * $rp), (2 * $rp)
+            $tb = New-Object Drawing.SolidBrush $trackC
+            $g.FillEllipse($tb, $pr); $tb.Dispose()
+            if ($piePct -gt 0) {
+                $pb = New-Object Drawing.SolidBrush $pieColor
+                if ($piePct -ge 100) { $g.FillEllipse($pb, $pr) }
+                else { $g.FillPie($pb, $pr.X, $pr.Y, $pr.Width, $pr.Height, -90, [float]([Math]::Max(8, 3.6 * $piePct))) }
+                $pb.Dispose()
+            }
         }
         $track.Dispose(); $g.Dispose()
         $h = $bmp.GetHicon(); $bmp.Dispose()
@@ -332,7 +377,9 @@ function Start-CsiTrayApp {
             $weekly  = $rows | Where-Object Kind -like 'weekly*' | Sort-Object Pct -Descending | Select-Object -First 1
             $sp = if ($session) { $session.Pct } else { 0 }
             $wp = if ($weekly) { $weekly.Pct } else { 0 }
-            & $setIcon $sp (& $levelColor $sp)
+            $pieColor = $null
+            if ($Opt.Layout -eq 'pie' -and $weekly -and $wp -ge $Opt.HideWeeklyBelow) { $pieColor = & $levelColor $wp $Colors.Weekly }
+            & $setIcon $sp (& $levelColor $sp $Colors.Session) $wp $pieColor
             $tip = @()
             if ($session) { $tip += "Session $([int]$sp)% - $(Format-CsiReset $session.Reset)" }
             if ($weekly)  { $tip += "$($weekly.Label) $([int]$wp)% - $(Format-CsiReset $weekly.Reset)" }
@@ -402,6 +449,6 @@ function Start-CsiTrayApp {
 # ---------------------------------------------------------------- entry point
 
 if ($Uninstall) { Uninstall-CsiTray }
-elseif ($Color -or $Track -or $Reset) { Set-CsiConfig }
+elseif ($Reset -or $Layout -or $Warn -or $HideWeeklyBelow -ge 0 -or $Color -or $WeeklyColor -or $Track) { Set-CsiConfig }
 elseif ($Run -or ($PSCommandPath -and $PSCommandPath -eq $CsiApp.Script)) { Start-CsiTrayApp }
 else { Install-CsiTray }
