@@ -124,17 +124,83 @@ function Uninstall-CsiTray {
 
 # ---------------------------------------------------------------- tray app
 
+function Get-CsiStatusCode($err) {
+    $resp = $err.Exception.Response
+    if ($resp) { return [int]$resp.StatusCode }
+    return 0
+}
+
+# Refresh an expired login the same way Claude Code does, and write the new tokens back so
+# Claude Code keeps working too (the refresh token is single-use and gets rotated).
+function Update-CsiToken([string]$path) {
+    $doc = Get-Content -LiteralPath $path -Raw | ConvertFrom-Json
+    $o = $doc.claudeAiOauth
+    if (-not $o.refreshToken) { throw 'Login expired - run: claude auth login' }
+    $body = @{
+        grant_type    = 'refresh_token'
+        refresh_token = $o.refreshToken
+        client_id     = '9d1c250a-e61b-44d9-88ed-5944d1962f5e'   # Claude Code's public OAuth client
+        scope         = (@($o.scopes) -join ' ')
+    } | ConvertTo-Json
+    try {
+        $r = Invoke-RestMethod -Method Post -Uri 'https://platform.claude.com/v1/oauth/token' -ContentType 'application/json' `
+            -Body $body -TimeoutSec 30 -UserAgent 'claude-minimalist-status-icon'
+    } catch {
+        $code = Get-CsiStatusCode $_
+        if ($code -ge 400 -and $code -lt 500) { throw 'Login expired - run: claude auth login' }
+        throw
+    }
+    if (-not $r.access_token) { throw 'Token refresh failed' }
+    $now = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
+    $o.accessToken = $r.access_token
+    if ($r.refresh_token) { $o.refreshToken = $r.refresh_token }
+    $o.expiresAt = $now + [int64]$r.expires_in * 1000
+    if ($r.refresh_token_expires_in) {
+        $o | Add-Member -NotePropertyName refreshTokenExpiresAt -NotePropertyValue ($now + [int64]$r.refresh_token_expires_in * 1000) -Force
+    }
+    if ($r.scope) { $o.scopes = @($r.scope -split ' ' | Where-Object { $_ }) }
+    # The old refresh token is now spent, so the new one must land in the file no matter what.
+    # Temp file + rename (atomic on the same volume); direct write as fallback. UTF-8 without BOM.
+    $json = $doc | ConvertTo-Json -Depth 20
+    $utf8 = New-Object Text.UTF8Encoding $false
+    $tmp = "$path.csi-tmp"
+    try {
+        [IO.File]::WriteAllText($tmp, $json, $utf8)
+        Move-Item -LiteralPath $tmp -Destination $path -Force -ErrorAction Stop
+    } catch {
+        [IO.File]::WriteAllText($path, $json, $utf8)
+        Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue
+    }
+    return $o.accessToken
+}
+
 function Get-CsiUsage {
     $path = Join-Path $env:USERPROFILE '.claude\.credentials.json'
     if (-not (Test-Path $path)) { throw 'Sign in to Claude Code first' }
-    $oauth = (Get-Content $path -Raw | ConvertFrom-Json).claudeAiOauth
+    $oauth = (Get-Content -LiteralPath $path -Raw | ConvertFrom-Json).claudeAiOauth
     if (-not $oauth.accessToken) { throw 'Sign in to Claude Code first' }
-    if ($oauth.expiresAt -and [DateTimeOffset]::FromUnixTimeMilliseconds([int64]$oauth.expiresAt) -lt [DateTimeOffset]::UtcNow) {
-        throw 'Token expired - open Claude Code'
-    }
     [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
-    $r = Invoke-RestMethod -Uri 'https://api.anthropic.com/api/oauth/usage' -TimeoutSec 20 -UserAgent 'claude-minimalist-status-icon' `
-        -Headers @{ Authorization = "Bearer $($oauth.accessToken)"; 'anthropic-beta' = 'oauth-2025-04-20' }
+
+    # Refresh only once the token has actually expired: while Claude Code is in use it renews
+    # tokens itself before expiry, so this avoids both sides rotating the same refresh token.
+    $token = $oauth.accessToken
+    $refreshed = $false
+    if ($oauth.expiresAt -and [DateTimeOffset]::FromUnixTimeMilliseconds([int64]$oauth.expiresAt) -le [DateTimeOffset]::UtcNow) {
+        $token = Update-CsiToken $path; $refreshed = $true
+    }
+    $call = {
+        param($t)
+        Invoke-RestMethod -Uri 'https://api.anthropic.com/api/oauth/usage' -TimeoutSec 20 -UserAgent 'claude-minimalist-status-icon' `
+            -Headers @{ Authorization = "Bearer $t"; 'anthropic-beta' = 'oauth-2025-04-20' }
+    }
+    try { $r = & $call $token }
+    catch {
+        if ((Get-CsiStatusCode $_) -ne 401 -or $refreshed) { throw }
+        # Rejected before its expiry time: maybe Claude Code just rotated it. Re-read, else refresh.
+        $latest = (Get-Content -LiteralPath $path -Raw | ConvertFrom-Json).claudeAiOauth.accessToken
+        $token = if ($latest -and $latest -ne $token) { $latest } else { Update-CsiToken $path }
+        $r = & $call $token
+    }
 
     $rows = @()
     if ($r.limits) {
@@ -272,6 +338,7 @@ function Start-CsiTrayApp {
             if ($weekly)  { $tip += "$($weekly.Label) $([int]$wp)% - $(Format-CsiReset $weekly.Reset)" }
             $lines = $rows | ForEach-Object { "$($_.Label)  $([int]$_.Pct)%    resets $(Format-CsiReset $_.Reset)" }
             & $setText ($tip -join "`n") $lines
+            $State.LastGood = Get-Date; $State.LastTip = $tip -join "`n"; $State.LastLines = $lines
             $State.Next = (Get-Date).AddMinutes(3)
         } catch {
             $msg = $_.Exception.Message
@@ -282,10 +349,16 @@ function Start-CsiTrayApp {
                 $ra = 0; [void][int]::TryParse($resp.Headers['Retry-After'], [ref]$ra)
                 $State.Next = (Get-Date).AddSeconds([Math]::Max(120, $ra))
             } elseif ($resp -and [int]$resp.StatusCode -eq 401) {
-                $msg = 'Token expired - open Claude Code'
+                $msg = 'Login expired - run: claude auth login'
             }
-            & $setIcon 0 $Colors.Off
-            & $setText "Claude usage: $msg" @("Error: $msg")
+            if ($msg -notlike 'Login expired*' -and $State.LastGood -and ((Get-Date) - $State.LastGood).TotalHours -lt 6) {
+                # Transient problem: keep the last ring, mark the numbers as stale.
+                $since = $State.LastGood.ToString('HH:mm')
+                & $setText "Stale since ${since}`n$($State.LastTip)" (@("Stale since ${since}: $msg") + $State.LastLines)
+            } else {
+                & $setIcon 0 $Colors.Off
+                & $setText "Claude usage: $msg" @("Error: $msg")
+            }
         }
     }
 

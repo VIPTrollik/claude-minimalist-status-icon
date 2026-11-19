@@ -29,4 +29,6 @@ It copies itself to `%LOCALAPPDATA%\ClaudeStatusIcon`, adds a Startup shortcut a
 
 ## Requirements
 
-Windows 10/11 and [Claude Code](https://claude.com/claude-code) signed in with a Pro/Max account. The script reads Claude Code's token from `~/.claude/.credentials.json` and polls the same usage endpoint `/usage` uses (undocumented, may change) every 3 minutes. If the token expires, the ring turns grey until you next use Claude Code.
+Windows 10/11 and the [Claude Code](https://claude.com/claude-code) CLI signed in once with a Pro/Max account (`claude auth login`). The script reads the login from `~/.claude/.credentials.json` and polls the same usage endpoint `/usage` uses (undocumented, may change) every 3 minutes.
+
+When the access token expires, the script refreshes it the way Claude Code does and writes the new tokens back to that file, so it keeps working even if you only use the desktop app. If the login itself is revoked, the ring empties and the tooltip says to run `claude auth login`. Brief network errors keep the last values, marked as stale.
